@@ -1,0 +1,11 @@
+<script src="hoit.js"></script>
+<div>привет</div>
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    // Аналог $(document).ready(function(){
+    const hoinsolver = new HoinSolver(0.5, 0, 3.16, 3.16);
+    //const rk4solver = new RK4SolverWithCache(0.5, 0, 3.16, 3.16, (h = 0.1));
+    console.log("solution", hoinsolver.solveTo(1, (h = 0.1)), hoinsolver.h);
+    0 / 0;
+  });
+</script>

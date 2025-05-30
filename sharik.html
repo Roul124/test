@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Шарик на пружине</title>
+    <style>
+      canvas {
+        border: 1px solid black;
+      }
+      .container {
+        display: flex;
+        gap: 20px;
+        padding: 20px;
+        font-family: Arial, sans-serif;
+      }
+      .controls {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .results {
+        margin-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas id="canvas" width="400" height="600"></canvas>
+      <div>
+        <div class="controls">
+          <label
+            >Масса (кг):
+            <input type="number" id="mass" value="1" min="0.1" step="0.1"
+          /></label>
+          <label
+            >Коэффициент упругости (Н/м):
+            <input type="number" id="springConst" value="10" min="1" step="1"
+          /></label>
+          <label
+            >Длина пружины в покое (м):
+            <input type="number" id="restLength" value="1" min="0.1" step="0.1"
+          /></label>
+          <label
+            >Начальное смещение (м):
+            <input
+              type="number"
+              id="initDisplacement"
+              value="0.5"
+              min="-2"
+              max="2"
+              step="0.1"
+          /></label>
+          <label
+            >Начальная скорость (м/с):
+            <input
+              type="number"
+              id="initVelocity"
+              value="0"
+              min="-10"
+              max="10"
+              step="0.1"
+          /></label>
+          <label
+            >Коэффициент затухания:
+            <input type="number" id="damping" value="1" min="0" step="0.01"
+          /></label>
+          <!--label>Время для скорости (с): <input type="number" id="timeForVelocity" value="1" min="0" step="0.1"></label-->
+          <button onclick="startSimulation()">Запустить симуляцию</button>
+        </div>
+        <div class="results" id="results"></div>
+      </div>
+    </div>
+    <canvas id="multiChart" width="600"></canvas>
+    <script src="analytic.js"></script>
+    <script src="rk4.js"></script>
+    <script src="adambashforth.js"></script>
+    <script src="hoit.js"></script>
+    <script src="chart.js"></script>
+
+    <script>
+      let intervalId;
+      const MAX_DATA_POINTS = 100; // Максимальное количество точек на графике
+      const MIN_VISIBLE_RANGE = 0.1; // Минимальный видимый диапазон оси Y
+      // 1. Начальные данные (3 датасета)
+      const initialData = {
+        labels: [], // Общие метки по оси X (например, время)
+        datasets: [
+          {
+            label: "Аналитический способ",
+            data: [],
+            borderColor: "rgb(255, 99, 132)",
+            tension: 0.1,
+          },
+          {
+            label: "РК4",
+            data: [],
+            borderColor: "rgb(54, 162, 235)",
+            tension: 0.1,
+          },
+          {
+            label: "метод Хойна",
+            data: [],
+            borderColor: "rgb(75, 192, 192)",
+            tension: 0.1,
+          },
+        ],
+      };
+
+      function percentageDifference(a, b) {
+        if (typeof a !== "number" || typeof b !== "number") {
+          throw new TypeError("Оба значения должны быть числами");
+        }
+        if (a === 0) {
+          throw new Error("Первое число не может быть нулём (деление на ноль)");
+        }
+
+        // Вычисляем относительное изменение и возвращаем абсолютное значение
+        return Math.abs(((b - a) / a) * 100);
+      }
+
+      const canvas = document.getElementById("canvas");
+      const simulationctx = canvas.getContext("2d");
+      let animationFrameId;
+
+      function drawBackground() {
+        const gradient = simulationctx.createLinearGradient(
+          0,
+          0,
+          0,
+          canvas.height,
+        );
+        gradient.addColorStop(0, "#87CEEB");
+        gradient.addColorStop(1, "#E0F6FF");
+        simulationctx.fillStyle = gradient;
+        simulationctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      function drawMetalBall(x, y, radius) {
+        const gradient = simulationctx.createRadialGradient(
+          x - radius * 0.3,
+          y - radius * 0.3,
+          radius * 0.1,
+          x,
+          y,
+          radius,
+        );
+        gradient.addColorStop(0, "#FFFFFF");
+        gradient.addColorStop(0.4, "#C0C0C0");
+        gradient.addColorStop(1, "#808080");
+
+        simulationctx.beginPath();
+        simulationctx.arc(x, y, radius, 0, 2 * Math.PI);
+        simulationctx.fillStyle = gradient;
+        simulationctx.fill();
+
+        simulationctx.beginPath();
+        simulationctx.arc(
+          x - radius * 0.4,
+          y - radius * 0.4,
+          radius * 0.2,
+          0,
+          2 * Math.PI,
+        );
+        simulationctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+        simulationctx.fill();
+
+        simulationctx.beginPath();
+        simulationctx.arc(x, y, radius, 0, 2 * Math.PI);
+        simulationctx.shadowBlur = 15;
+        simulationctx.shadowColor = "rgba(0, 0, 0, 0.5)";
+        simulationctx.shadowOffsetX = 5;
+        simulationctx.shadowOffsetY = 5;
+        simulationctx.fill();
+        simulationctx.shadowBlur = 0;
+        simulationctx.shadowOffsetX = 0;
+        simulationctx.shadowOffsetY = 0;
+      }
+
+      function drawSpring(startX, startY, endX, endY) {
+        const segments = 30;
+        const amplitude = 20;
+        const length = endY - startY;
+        const step = length / segments;
+
+        simulationctx.beginPath();
+        simulationctx.moveTo(startX, startY);
+        for (let i = 0; i <= segments; i++) {
+          const y = startY + i * step;
+          const xOffset = amplitude * Math.sin((i / segments) * Math.PI * 6);
+          simulationctx.lineTo(startX + xOffset, y);
+        }
+        simulationctx.strokeStyle = "#444444";
+        simulationctx.lineWidth = 3;
+        simulationctx.stroke();
+
+        simulationctx.beginPath();
+        simulationctx.moveTo(startX, startY);
+        for (let i = 0; i <= segments; i++) {
+          const y = startY + i * step;
+          const xOffset =
+            amplitude * Math.sin((i / segments) * Math.PI * 6) - 2;
+          simulationctx.lineTo(startX + xOffset, y);
+        }
+        simulationctx.strokeStyle = "#AAAAAA";
+        simulationctx.lineWidth = 1;
+        simulationctx.stroke();
+      }
+
+      function isOscillationEnded(
+        t,
+        x,
+        v,
+        k,
+        m,
+        gamma,
+        energyThreshold = 0.001,
+      ) {
+        // Энергетический критерий
+        const energy = 0.5 * k * x ** 2 + 0.5 * m * v ** 2;
+        // Кинематический критерий
+        const positionThreshold = 0.001;
+        const velocityThreshold = 0.01;
+
+        return (
+          energy < energyThreshold //||
+          //(Math.abs(x) < positionThreshold && Math.abs(v) < velocityThreshold)
+        );
+      }
+
+      const chartctx = document.getElementById("multiChart").getContext("2d");
+      const chart = new Chart(chartctx, {
+        type: "line",
+        data: initialData,
+        options: {
+          animation: false,
+          responsiveAnimationDuration: 0,
+
+          responsive: true,
+          //maintainAspectRatio: false,
+          scales: {
+            x: {
+              type: "linear",
+              title: { display: true, text: "Время" },
+              ticks: { autoSkip: true },
+            },
+            y: {
+              title: { display: true, text: "Значение" },
+
+              afterDataLimits: (scale) => {
+                const max = Math.max(
+                  ...scale.chart.data.datasets.flatMap((d) => d.data),
+                );
+                const min = Math.min(
+                  ...scale.chart.data.datasets.flatMap((d) => d.data),
+                );
+                const range = Math.max(max - min, MIN_VISIBLE_RANGE);
+                scale.max = max + range * 0.1;
+                scale.min = min - range * 0.1;
+              },
+            },
+          },
+          plugins: {
+            zoom: {
+              zoom: {
+                wheel: { enabled: true },
+                pinch: { enabled: true },
+              },
+            },
+          },
+        },
+      });
+
+      function addData(time, value1, value2, value3) {
+        /*
+        console.log(
+          "time: ",
+          time,
+          " val1: ",
+          value1,
+          " val2: ",
+          value2,
+          " val3: ",
+          value3,
+        );*/
+
+        chart.data.labels.push(time);
+        chart.data.datasets[0].data.push(value1);
+        chart.data.datasets[1].data.push(value2);
+        chart.data.datasets[2].data.push(value3);
+
+        const maxLength = 500;
+        if (chart.data.labels.length >= maxLength) {
+          const removeCount = Math.floor(maxLength * 0.5); // 20% от maxLength
+
+          chart.data.labels.splice(0, removeCount);
+
+          chart.data.datasets.forEach((dataset) =>
+            dataset.data.splice(0, removeCount),
+          );
+        }
+        chart.update(); // 🔹 Одна перерисовка в конце
+      }
+
+      function updateChart(t, x0, v0, omega0, gamma, rk4solver, hoinsolver) {
+        const val1 = analyticalSolution(t, x0, v0, omega0, gamma);
+        const val2 = rk4solver.getPosition(t).x;
+        const val3 = hoinsolver.solveTo(t).x;
+
+        addData(t, val1, val2, val3);
+      }
+      function startSimulation() {
+        if (chart) {
+          chart.data.labels = [];
+          chart.data.datasets[0].data = [];
+          chart.data.datasets[1].data = [];
+          chart.data.datasets[2].data = [];
+        }
+
+        if (animationFrameId) cancelAnimationFrame(animationFrameId);
+
+        const m = parseFloat(document.getElementById("mass").value);
+        const k = parseFloat(document.getElementById("springConst").value);
+        const L0 = parseFloat(document.getElementById("restLength").value);
+        const x0 = parseFloat(
+          document.getElementById("initDisplacement").value,
+        );
+        const v0 = parseFloat(document.getElementById("initVelocity").value);
+        const b = parseFloat(document.getElementById("damping").value);
+        //const tForVelocity = parseFloat(document.getElementById('timeForVelocity').value);
+
+        const omega0 = Math.sqrt(k / m);
+        const T = (2 * Math.PI) / omega0;
+        const alpha = b / (2 * m);
+        const omega = Math.sqrt(omega0 * omega0 - alpha * alpha);
+        const gamma = b / (2 * m);
+        document.getElementById("results").innerHTML = `
+                <h3>Рассчитанные параметры:</h3>
+                <p>Период колебаний (T): ${T.toFixed(2)} с</p>
+                <p>Циклическая частота (ω₀): ${omega0.toFixed(2)} рад/с</p>
+                <p>Амплитуда (A): ${Math.abs(x0).toFixed(2)} м</p>
+            `;
+
+        let t = 0;
+        const dt = 0.01;
+        const scale = 100;
+        const ballRadius = 25;
+
+        const rk4solver = new RK4SolverWithCache(x0, v0, gamma, omega0);
+        const absolver = new AdamsBashforthSolver(x0, v0, gamma, omega0);
+        const hoinsolver = new HoinSolver(x0, v0, gamma, omega0);
+        let lastUpdate = 0;
+        //let quietSteps = 0;
+        function animate() {
+          simulationctx.clearRect(0, 0, canvas.width, canvas.height);
+          drawBackground();
+
+          simulationctx.beginPath();
+          simulationctx.arc(200, 50, 5, 0, 2 * Math.PI);
+          simulationctx.fillStyle = "#333";
+          simulationctx.fill();
+
+          const x = analyticalSolution(t, x0, v0, omega0, gamma);
+          const y = L0 + x;
+          const rk4solve = rk4solver.getPosition(t);
+          const hoinsolve = hoinsolver.solveTo(t);
+          const v = rk4solve.v;
+          drawSpring(200, 50, 200, 50 + y * scale);
+          drawMetalBall(200, 50 + y * scale, ballRadius);
+          /*
+          if (Math.abs(x) < 0.0005) {
+            quietSteps++;
+          } else {
+            quietSteps = 0;
+          }
+          */
+
+          const ioe = isOscillationEnded(t, x, v, k, m, gamma);
+          if (ioe) {
+            document.getElementById("results").innerHTML += `
+                <p>Время затухания: ${Math.round((t + Number.EPSILON) * 100) / 100} с</p>
+                <p>Координата, полученная аналитическим методом: ${x} м</p>
+                <p>Координата, полученная методом РК4: ${rk4solve.x} м</p>
+                <p>Координата, полученная методом Хойна: ${hoinsolve.x} м</p>
+                <p>Отклонение от эталона метода РК4: ${percentageDifference(x, rk4solve.x)}%</p>
+                <p>Отклонение от эталона метода Хойна: ${percentageDifference(x, hoinsolve.x)}%</p>
+            `;
+            cancelAnimationFrame(animationFrameId);
+            return;
+          }
+
+          t += dt;
+          const now = Date.now();
+          addData(t, x, rk4solve.x, hoinsolve.x);
+          /*
+          if (now - lastUpdate >= 1000 / 10000) {
+            // 🔹 Ограничиваем до 10 FPS
+            lastUpdate = now;
+
+            }*/
+
+          animationFrameId = requestAnimationFrame(animate);
+        }
+
+        animate();
+      }
+
+      startSimulation();
+    </script>
+  </body>
+</html>
